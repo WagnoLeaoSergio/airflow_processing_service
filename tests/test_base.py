@@ -1,5 +1,5 @@
-from project_name.base import NAME
+from airflow_processing_service.base import NAME
 
 
 def test_base():
-    assert NAME == "project_name"
+    assert NAME == "airflow_processing_service"

@@ -1,4 +1,4 @@
-"""Entry point for project_name."""
+"""Entry point for airflow_processing_service."""
 
 from .cli import main  # pragma: no cover
 
