@@ -8,9 +8,14 @@ from datetime import datetime, timedelta
 # The DAG object; we'll need this to instantiate a DAG
 from airflow import DAG
 from airflow.decorators import task
+from airflow.operators.empty import EmptyOperator
+from airflow.utils.edgemodifier import Label
 
 DATALAKE_HOST = "127.0.0.1"
-DATALAKE_PORT = "5000"
+DATALAKE_PORT = "5002"
+
+BATCH_SERVICE_HOST = "127.0.0.1"
+BATCH_SERVICE_PORT = "5000"
 
 CLOUD_HOST = "127.0.0.1"
 CLOUD_PORT = "8000"
@@ -49,12 +54,68 @@ def build_batch_workflow_dag_v0(user: User):
         # def load_data():
         #     return open(os.path.join("temp_data", "health_data.csv"), "r")
 
+        end_flow = EmptyOperator(
+            task_id="finish_batch_flow"
+        )
+
+        branch_options = ["finish_batch_flow", "run_model_training"]
+
+        @task.branch(task_id="check_and_collect_data")
+        def collect_user_data(user: str):
+            user_info = requests.get(
+                f"http://{DATALAKE_HOST}:{DATALAKE_PORT}/api/v1/user/{user_id}",
+            ).json()
+
+            latest_data = user_info.latest_measure_date
+
+            if latest_data is None:
+                return ["finish_batch_flow"]
+            else:
+                latest_data = datetime.strptime(
+                    latest_data,
+                    "%Y-%m-%d %H:%M:%S"
+                )
+
+                start_date = latest_data - timedelta(days=11)
+                end_date = latest_data - timedelta(days=4)
+
+                measures = requests.get(
+                    f"http://{DATALAKE_HOST}:{DATALAKE_PORT}/api/v1/measure/{user_id}",
+                    data={
+                        "start_date": str(start_date),
+                        "end_date": str(end_date)
+                    }
+                ).json()
+
+                del measures["user"]
+
+                # dict_data = {k: [] for k in measures.keys()}
+                #
+                # for measure in measures:
+                #     dict_data["id"].append(measure["id"])
+                #     dict_data["date"].append(measure["date"])
+                #     dict_data["steps"].append(measure["steps"])
+                #     dict_data["sleep"].append(measure["sleep"])
+                #     dict_data["heart"].append(measure["heart"])
+                #     dict_data["pressure_high"].append(measure["pressure_high"])
+                #     dict_data["pressure_low"].append(measure["pressure_low"])
+                #     dict_data["oxygen"].append(measure["oxygen"])
+                #
+                # df_data = pd.DataFrame(dict_data)
+
+                df_data = pd.DataFrame.from_dict(measures)
+                df_data.to_csv(
+                    os.path.join("temp_data", "health_data.csv")
+                )
+
+                return ["run_model_training"]
+
         @task(task_id="run_model_training")
         def make_post_request(user_id: str):
             health_file = open(os.path.join(
                 "temp_data", "health_data.csv"), "rb")
             predictions = requests.post(
-                f"http://{DATALAKE_HOST}:{DATALAKE_PORT}/api/v1/mlflow/{user_id}",
+                f"http://{BATCH_SERVICE_HOST}:{BATCH_SERVICE_PORT}/api/v1/mlflow/{user_id}",
                 files={"health_file": health_file}
             ).json()
 
@@ -96,7 +157,7 @@ def build_batch_workflow_dag_v0(user: User):
 
             return divergences
 
-        @task(task_id="process_anomalies")
+        @task(task_id="send_results_to_cloud")
         def send_results(divergences):
             data = []
             for div in divergences:
@@ -119,11 +180,18 @@ def build_batch_workflow_dag_v0(user: User):
 
             return None
 
-        send_results(process_anomalies(make_post_request(user_id)))
+        check_data = collect_user_data(user_id)
+
+        predictions = make_post_request(user_id)
+        divergences = process_anomalies(predictions)
+        send_results(divergences) >> end_flow
+        check_data >> end_flow
+        check_data >> predictions
+
         return dag
 
 
-users_list = [("user1", "wagnoleao@gmal.com")]
+users_list = [("wagno", "wagnoleao@gmal.com")]
 
 for user in users_list:
     globals()[f"batch_flow_{user[0]}"] = build_batch_workflow_dag_v0(
