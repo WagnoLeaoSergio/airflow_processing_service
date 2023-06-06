@@ -35,7 +35,7 @@ def build_batch_workflow_dag_v0(user: User):
     with DAG(
         f"batch_flow_{user_id}",
         schedule=timedelta(minutes=15),
-        start_date=datetime.now() + timedelta(minutes=1),
+        start_date=datetime.now() + timedelta(minutes=3),
         max_active_runs=1,
         default_args={
             "depends_on_past": False,
@@ -50,12 +50,9 @@ def build_batch_workflow_dag_v0(user: User):
         tags=["batch", "prototype_v0"],
     ) as dag:
 
-        # @task(task_id="collect_health_data")
-        # def load_data():
-        #     return open(os.path.join("temp_data", "health_data.csv"), "r")
-
         end_flow = EmptyOperator(
-            task_id="finish_batch_flow"
+            task_id="finish_batch_flow",
+            trigger_rule="none_failed_min_one_success"
         )
 
         branch_options = ["finish_batch_flow", "run_model_training"]
@@ -66,9 +63,10 @@ def build_batch_workflow_dag_v0(user: User):
                 f"http://{DATALAKE_HOST}:{DATALAKE_PORT}/api/v1/user/{user_id}",
             ).json()
 
-            latest_data = user_info.latest_measure_date
+            print(user_info)
+            latest_data = user_info["latest_measure_date"]
 
-            if latest_data is None:
+            if not latest_data:
                 return ["finish_batch_flow"]
             else:
                 latest_data = datetime.strptime(
@@ -81,13 +79,12 @@ def build_batch_workflow_dag_v0(user: User):
 
                 measures = requests.get(
                     f"http://{DATALAKE_HOST}:{DATALAKE_PORT}/api/v1/measure/{user_id}",
-                    data={
-                        "start_date": str(start_date),
-                        "end_date": str(end_date)
-                    }
                 ).json()
 
-                del measures["user"]
+                measures = measures["measures"]
+
+                if len(measures) < 3:
+                    return ["finish_batch_flow"]
 
                 # dict_data = {k: [] for k in measures.keys()}
                 #
@@ -104,6 +101,8 @@ def build_batch_workflow_dag_v0(user: User):
                 # df_data = pd.DataFrame(dict_data)
 
                 df_data = pd.DataFrame.from_dict(measures)
+                df_data.drop(["user"], axis=1, inplace=True)
+
                 df_data.to_csv(
                     os.path.join("temp_data", "health_data.csv")
                 )
@@ -178,6 +177,7 @@ def build_batch_workflow_dag_v0(user: User):
                 json={"notifications": data}
             ).json()
 
+            print(response)
             return None
 
         check_data = collect_user_data(user_id)
@@ -191,7 +191,7 @@ def build_batch_workflow_dag_v0(user: User):
         return dag
 
 
-users_list = [("wagno", "wagnoleao@gmal.com")]
+users_list = [("wagno", "wagnoleao@gmail.com")]
 
 for user in users_list:
     globals()[f"batch_flow_{user[0]}"] = build_batch_workflow_dag_v0(
