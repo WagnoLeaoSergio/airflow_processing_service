@@ -46,7 +46,7 @@ def build_batch_workflow_dag_v0(user: User):
             "max_active_runs": 1,
         },
         description="DAG that executes the batch processing of the data collect by a user",
-        catchup=True,
+        catchup=False,
         tags=["batch", "prototype_v0"],
     ) as dag:
 
@@ -55,15 +55,12 @@ def build_batch_workflow_dag_v0(user: User):
             trigger_rule="none_failed_min_one_success"
         )
 
-        branch_options = ["finish_batch_flow", "run_model_training"]
-
         @task.branch(task_id="check_and_collect_data")
         def collect_user_data(user: str):
             user_info = requests.get(
                 f"http://{DATALAKE_HOST}:{DATALAKE_PORT}/api/v1/user/{user_id}",
             ).json()
 
-            print(user_info)
             latest_data = user_info["latest_measure_date"]
 
             if not latest_data:
@@ -77,28 +74,20 @@ def build_batch_workflow_dag_v0(user: User):
                 start_date = latest_data - timedelta(days=11)
                 end_date = latest_data - timedelta(days=4)
 
+                data = {
+                    "start_date": str(start_date),
+                    "end_date": str(end_date)
+                }
+
                 measures = requests.get(
                     f"http://{DATALAKE_HOST}:{DATALAKE_PORT}/api/v1/measure/{user_id}",
+                    data=data
                 ).json()
 
                 measures = measures["measures"]
 
-                if len(measures) < 3:
+                if len(measures) < 50:
                     return ["finish_batch_flow"]
-
-                # dict_data = {k: [] for k in measures.keys()}
-                #
-                # for measure in measures:
-                #     dict_data["id"].append(measure["id"])
-                #     dict_data["date"].append(measure["date"])
-                #     dict_data["steps"].append(measure["steps"])
-                #     dict_data["sleep"].append(measure["sleep"])
-                #     dict_data["heart"].append(measure["heart"])
-                #     dict_data["pressure_high"].append(measure["pressure_high"])
-                #     dict_data["pressure_low"].append(measure["pressure_low"])
-                #     dict_data["oxygen"].append(measure["oxygen"])
-                #
-                # df_data = pd.DataFrame(dict_data)
 
                 df_data = pd.DataFrame.from_dict(measures)
                 df_data.drop(["user"], axis=1, inplace=True)
@@ -172,12 +161,11 @@ def build_batch_workflow_dag_v0(user: User):
                     }
                 )
 
-            response = requests.post(
+            requests.post(
                 f"http://{CLOUD_HOST}:{CLOUD_PORT}/notification",
                 json={"notifications": data}
             ).json()
 
-            print(response)
             return None
 
         check_data = collect_user_data(user_id)
